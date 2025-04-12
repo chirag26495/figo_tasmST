@@ -91,6 +91,11 @@ if(store_video_inTASM):
 query_out_dir = args.out+'/'+metadata_id+'/'
 # query_out_dir = 'query_out/'+metadata_id+'/'
 os.makedirs(query_out_dir,exist_ok=True)
+os.system('rm '+query_out_dir+'/frame1*.jpg')
+os.system('rm '+query_out_dir+'/frame2*.jpg')
+os.system('rm '+query_out_dir+'/frame3*.jpg')
+os.system('rm '+query_out_dir+'/frame4*.jpg')
+os.system('rm '+query_out_dir+'/frame5*.jpg')
 os.system('rm '+query_out_dir+'/*.jpg')
 query_out_df = {'frame':[],'label':[], 'x1':[], 'y1':[], 'width':[], 'height':[]}
 query_out_csv_path = query_out_dir+'query_metadata.csv'
