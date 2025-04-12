@@ -1,0 +1,547 @@
+diff --git a/.gitignore b/.gitignore
+index 0b323e6..36bfd0a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,3 +1,4 @@
++*.ipynb_checkpoints
+ # Prerequisites
+ *.d
+ 
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index 783917d..5ec94fa 100644
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -7,7 +7,7 @@ ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,video
+ 
+ COPY . /tasm
+ 
+-RUN mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && make && \
++RUN mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug .. && make -j8 && \
+     cd python/python_package && \
+     python3 setup.py sdist bdist_wheel && \
+     pip3 install -e .
+diff --git a/docker/Dockerfile.environment b/docker/Dockerfile.environment
+index 18daeda..320e0b1 100644
+--- a/docker/Dockerfile.environment
++++ b/docker/Dockerfile.environment
+@@ -72,13 +72,16 @@ RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 100 --slave /u
+     ln -s /usr/bin/gcc-6 /usr/local/cuda/bin/gcc && \
+     ln -s /usr/bin/g++-6 /usr/local/cuda/bin/g++6
+ 
+-RUN python3 -m pip install --upgrade pip && \
+-    python3 -m pip install setuptools wheel jupyter notebook opencv-python pandas numpy matplotlib && \
+-    python3 -m pip install --upgrade nbconvert
++RUN python3 -m pip install --upgrade pip
++RUN python3 -m pip install setuptools wheel 
++RUN python3 -m pip install pandas==1.1.1 numpy==1.19.0 matplotlib==3.3.0
++RUN python3 -m pip install jupyter==1.1.0
++RUN python3 -m pip install opencv-python==4.10.0.84 --verbose
++RUN python3 -m pip install nbconvert
+ 
+ # Install boost python
+ RUN cd /usr/src && \
+-    wget --no-verbose https://boostorg.jfrog.io/artifactory/main/release/1.75.0/source/boost_1_75_0.tar.gz && \
++    wget --no-verbose https://archives.boost.io/release/1.75.0/source/boost_1_75_0.tar.gz && \
+     tar xzf boost_1_75_0.tar.gz && \
+     cd boost_1_75_0 && \
+     ./bootstrap.sh --with-python=$(which python3) && \
+diff --git a/python/include/TasmWrappers.h b/python/include/TasmWrappers.h
+index 2f3cb47..6d68dac 100644
+--- a/python/include/TasmWrappers.h
++++ b/python/include/TasmWrappers.h
+@@ -20,6 +20,9 @@ public:
+     bool isEmpty() const { return !image_; }
+     unsigned int width() const { return image_->width(); }
+     unsigned int height() const { return image_->height(); }
++    unsigned int frame_id() const { return image_->frame_id(); }
++    unsigned int frame_x() const { return image_->frame_x(); }
++    unsigned int frame_y() const { return image_->frame_y(); }
+ 
+     np::ndarray array() { return makeArray(); }
+ 
+diff --git a/python/src/bindings.cpp b/python/src/bindings.cpp
+index f99094a..838475e 100644
+--- a/python/src/bindings.cpp
++++ b/python/src/bindings.cpp
+@@ -36,6 +36,9 @@ BOOST_PYTHON_MODULE(_tasm) {
+             .def("is_empty", &tasm::python::PythonImage::isEmpty)
+             .def("width", &tasm::python::PythonImage::width)
+             .def("height", &tasm::python::PythonImage::height)
++            .def("frame_id", &tasm::python::PythonImage::frame_id)
++            .def("frame_x", &tasm::python::PythonImage::frame_x)
++            .def("frame_y", &tasm::python::PythonImage::frame_y)
+             .def("array", &tasm::python::PythonImage::array);
+ 
+     class_<tasm::python::SelectionResults>("ObjectIterator", no_init)
+@@ -116,4 +119,4 @@ BOOST_PYTHON_MODULE(_tasm) {
+     class_<tasm::python::PythonWorkloadCostEstimator>("WorkloadCostEstimator", no_init)
+         .def("estimate_cost", &tasm::python::PythonWorkloadCostEstimator::estimateCostForWorkload)
+         .staticmethod("estimate_cost");
+-}
+\ No newline at end of file
++}
+diff --git a/tasm/encoding/include/DecodedPixelData.h b/tasm/encoding/include/DecodedPixelData.h
+index 5bfad0c..471886d 100644
+--- a/tasm/encoding/include/DecodedPixelData.h
++++ b/tasm/encoding/include/DecodedPixelData.h
+@@ -15,6 +15,12 @@ public:
+ 
+     virtual unsigned int height() const = 0;
+ 
++    virtual unsigned int frame_id() const = 0;
++
++    virtual unsigned int frame_x() const = 0;
++
++    virtual unsigned int frame_y() const = 0;
++
+     virtual unsigned int xOffset() const = 0;
+ 
+     virtual unsigned int yOffset() const = 0;
+@@ -28,21 +34,31 @@ using GPUPixelDataContainer = std::unique_ptr<std::vector<GPUPixelDataPtr>>;
+ class GPUPixelDataFromDecodedFrame : public GPUPixelData {
+ public:
+     GPUPixelDataFromDecodedFrame(GPUFramePtr frame, unsigned int width, unsigned int height,
++                                 unsigned int frame_id, unsigned int frame_x, unsigned int frame_y,
+                                  unsigned int xOffset, unsigned int yOffset)
+-            : frame_(frame), width_(width), height_(height),
+-              xOffset_(xOffset), yOffset_(yOffset) {}
++            : frame_(frame), width_(width), height_(height), 
++              frame_id_(frame_id), frame_x_(frame_x), frame_y_(frame_y),
++              xOffset_(xOffset), yOffset_(yOffset) 
++              {}
+ 
+     CUdeviceptr handle() const override { return frame_->cuda()->handle(); }
+     unsigned int pitch() const override { return frame_->cuda()->pitch(); }
+     unsigned int width() const override { return width_; }
+     unsigned int height() const override { return height_; }
++    unsigned int frame_id() const override { return frame_id_; }
++    unsigned int frame_x() const override { return frame_x_; }
++    unsigned int frame_y() const override { return frame_y_; }
+     unsigned int xOffset() const override { return xOffset_; }
+     unsigned int yOffset() const override { return yOffset_; }
++    
+ 
+ private:
+     GPUFramePtr frame_;
+     unsigned int width_;
+     unsigned int height_;
++    unsigned int frame_id_;
++    unsigned int frame_x_;
++    unsigned int frame_y_;
+     unsigned int xOffset_;
+     unsigned int yOffset_;
+ };
+diff --git a/tasm/interface/include/ImageUtilities.h b/tasm/interface/include/ImageUtilities.h
+index 1b7da24..2731a3f 100644
+--- a/tasm/interface/include/ImageUtilities.h
++++ b/tasm/interface/include/ImageUtilities.h
+@@ -8,17 +8,23 @@
+ using PixelPtr = uint8_t[];
+ class Image {
+ public:
+-    Image(unsigned int width, unsigned int height, std::unique_ptr<PixelPtr> pixels)
+-            : width_(width), height_(height), pixels_(std::move(pixels))
++    Image(unsigned int width, unsigned int height, unsigned int frame_id, unsigned int frame_x, unsigned int frame_y, std::unique_ptr<PixelPtr> pixels)
++            : width_(width), height_(height), frame_id_(frame_id), frame_x_(frame_x), frame_y_(frame_y), pixels_(std::move(pixels))
+     {}
+ 
+     unsigned int width() const { return width_; }
+     unsigned int height() const { return height_; }
++    unsigned int frame_id() const { return frame_id_; }
++    unsigned int frame_x() const { return frame_x_; }
++    unsigned int frame_y() const { return frame_y_; }
+     uint8_t* pixels() const { return pixels_.get(); }
+ 
+ private:
+     unsigned int width_;
+     unsigned int height_;
++    unsigned int frame_id_;
++    unsigned int frame_x_;
++    unsigned int frame_y_;
+     std::unique_ptr<PixelPtr> pixels_;
+ };
+ using ImagePtr = std::shared_ptr<Image>;
+diff --git a/tasm/operators/include/TileOperators.h b/tasm/operators/include/TileOperators.h
+index 9d95a74..61bee06 100644
+--- a/tasm/operators/include/TileOperators.h
++++ b/tasm/operators/include/TileOperators.h
+@@ -33,6 +33,7 @@ public:
+ 
+     bool isComplete() override { return isComplete_; }
+     std::optional<GPUDecodedFrameData> next() override;
++    std::unordered_map<int, std::shared_ptr<TileLayout>> tileMap;
+ 
+ private:
+     void reconfigureEncodersForNewLayout(std::shared_ptr<const TileLayout> newLayout);
+diff --git a/tasm/operators/src/MergeTiles.cc b/tasm/operators/src/MergeTiles.cc
+index 8cd09b5..aa8affe 100644
+--- a/tasm/operators/src/MergeTiles.cc
++++ b/tasm/operators/src/MergeTiles.cc
+@@ -69,7 +69,10 @@ std::optional<GPUPixelDataContainer> MergeTilesOperator::next() {
+             pixelData->emplace_back(std::make_shared<GPUPixelDataFromDecodedFrame>(
+                     frame,
+                     boundingBox.width, boundingBox.height,
++                    boundingBox.id, boundingBox.x, boundingBox.y,
+                     offsetIntoTile.second, offsetIntoTile.first));
++            //std::cout << "\n#### frame_id, frame_x, frame_y " << boundingBox.id << ", " << boundingBox.x << ", " << boundingBox.y << std::endl; 
++	    //std::cout << "\n####pixelData frame_id, frame_x, frame_y " << pixelData->back()->frame_id() << ", " << pixelData->back()->frame_x() << ", " << pixelData->back()->frame_y() << std::endl;
+ 
+         }
+     }
+@@ -91,7 +94,7 @@ std::optional<GPUPixelDataContainer> TilesToPixelsOperator::next() {
+         pixelData->emplace_back(std::make_shared<GPUPixelDataFromDecodedFrame>(
+                 frame,
+                 frame->width(), frame->height(),
+-                0, 0)); // Fake a (0, 0) offset.
++                0, 0, 0, 0, 0)); // Fake a (0, 0) offset.
+     }
+     return pixelData;
+ }
+diff --git a/tasm/operators/src/TileOperators.cc b/tasm/operators/src/TileOperators.cc
+index cf84b9d..88cbb4a 100644
+--- a/tasm/operators/src/TileOperators.cc
++++ b/tasm/operators/src/TileOperators.cc
+@@ -1,50 +1,247 @@
+ #include "TileOperators.h"
+-
+ #include "EncodeAPI.h"
+ #include "Transaction.h"
+ 
+ namespace tasm {
+ 
+ std::optional<GPUDecodedFrameData> TileOperator::next() {
+-    auto decodedData = parent_->next();
+-    if (parent_->isComplete()) {
+-        readDataFromEncoders(true);
+-        saveTileGroupsToDisk();
+-        isComplete_ = true;
+-        return {};
+-    }
+ 
+-    for (auto frame : decodedData->frames()) {
+-        int frameNumber = -1;
+-        frameNumber = frame->getFrameNumber(frameNumber) ? frameNumber : frameNumber_++;
+-        auto tileLayout = tileConfigurationProvider_->tileLayoutForFrame(frameNumber);
+-
+-        // Reconfigure the encoders if the layout changed.
+-        if (!currentTileLayout_ || *tileLayout != *currentTileLayout_ || frameNumber != lastFrameInGroup_ + 1) {
+-            // Read the data that was flushed from the encoders because it has the rest of the frames
+-            // that were encoded with the last configuration.
+-            if (currentTileLayout_) {
+-                readDataFromEncoders(true);
+-                if (firstFrameInGroup_ != -1)
+-                    saveTileGroupsToDisk();
+-            }
+-            tilesCurrentlyBeingEncoded_.clear();
+-
+-            // Reconfigure the encoders.
+-            reconfigureEncodersForNewLayout(tileLayout);
+-
+-            currentTileLayout_ = tileLayout;
+-            firstFrameInGroup_ = frameNumber;
+-        }
+-
+-        // Encode each tile.
+-        lastFrameInGroup_ = frameNumber;
+-        encodeFrameToTiles(frame, frameNumber);
+-    }
++auto decodedData = parent_->next();
++
++if (parent_->isComplete()) {
++
++// readDataFromEncoders(true);
++
++// saveTileGroupsToDisk();
++
++isComplete_ = true;
++
++return {};
++
++}
++
++
++int nFrames = decodedData->frames().size();
++
++std::unordered_map<int, std::shared_ptr<TileLayout>> configurationMap;
++
++std::vector<int> configurationBoundaries;
++
++std::shared_ptr<TileLayout> currentLayout = nullptr;
++
++auto initialFrameNumber = frameNumber_;
++
++for (auto frameIdx = frameNumber_; frameIdx < frameNumber_ + nFrames; ++frameIdx) {
++
++auto tileLayout = tileConfigurationProvider_->tileLayoutForFrame(frameIdx);
++
++if (!currentLayout || *currentLayout != *tileLayout) {
++
++tileMap[frameIdx] = tileLayout;
++
++configurationBoundaries.push_back(frameIdx);
++
++currentLayout = tileLayout;
++
++}
++
++}
++
++frameNumber_ += nFrames;
++
++
++for (auto frameBoundaryIdx = 0u; frameBoundaryIdx < configurationBoundaries.size(); ++frameBoundaryIdx) {
++
++firstFrameInGroup_ = configurationBoundaries[frameBoundaryIdx];
++
++lastFrameInGroup_ = (frameBoundaryIdx == configurationBoundaries.size() - 1 ? frameNumber_ : configurationBoundaries[frameBoundaryIdx + 1]) - 1;
++
++currentTileLayout_ = tileMap[firstFrameInGroup_];
++
++
++for (auto tileIndex = 0u; tileIndex < currentTileLayout_->numberOfTiles(); ++tileIndex) {
++
++Rectangle rect = currentTileLayout_->rectangleForTile(tileIndex);
++
++tileEncodersManager_.createEncoderWithConfiguration(tileIndex, rect.width, rect.height);
++
++tilesCurrentlyBeingEncoded_.push_back(tileIndex);
++
++for (auto frameNum = firstFrameInGroup_; frameNum <= lastFrameInGroup_; ++frameNum) {
++
++auto frameIdx = frameNum - initialFrameNumber;
++
++// This assumes that the decoded frames are in the correct order.
++
++// i.e., `frame->getFrameNumber(frameNumber)` follows in-order.
++
++auto frame = decodedData->frames()[frameIdx];
++
++tileEncodersManager_.encodeFrameForIdentifier(tileIndex, *frame, rect.y, rect.x, false);
+ 
+-    return decodedData;
+ }
+ 
++
++readDataFromEncoders(true);
++
++saveTileGroupsToDisk();
++
++tilesCurrentlyBeingEncoded_.clear();
++
++}
++
++}
++
++outputEntry_->incrementTileVersion(); 
++
++
++return decodedData;
++
++}
++// std::optional<GPUDecodedFrameData> TileOperator::next() {
++
++// auto decodedData = parent_->next();
++
++// if (parent_->isComplete()) {
++
++// // readDataFromEncoders(true);
++
++// // saveTileGroupsToDisk();
++
++// isComplete_ = true;
++
++// return {};
++
++// }
++
++// size_t nFrames = decodedData->frames().size();
++
++// std::unordered_map<int, std::shared_ptr<TileLayout>> configurationMap;
++
++// std::vector<int> configurationBoundaries;
++
++// std::shared_ptr<TileLayout> currentLayout = nullptr;
++
++// // for (auto frameIdx = 0u; frameIdx < nFrames; ++frameIdx) {
++
++// // auto tileLayout = tileConfigurationProvider_->tileLayoutForFrame(frameIdx);
++
++// // if (!currentLayout || *currentLayout != *tileLayout) {
++
++// // tileMap[frameIdx] = tileLayout;
++
++// // configurationBoundaries.push_back(frameIdx);
++
++// // currentLayout = tileLayout;
++
++// // }
++
++// // }
++// for (auto frameIdx = frameNumber_; frameIdx < frameNumber_ + nFrames; ++frameIdx) {
++
++// auto tileLayout = tileConfigurationProvider_->tileLayoutForFrame(frameIdx);
++
++// if (!currentLayout || *currentLayout != *tileLayout) {
++
++// tileMap[frameIdx] = tileLayout;
++
++// configurationBoundaries.push_back(frameIdx);
++
++// currentLayout = tileLayout;
++
++// }
++
++// }
++
++// frameNumber_ += nFrames;
++
++
++
++// for (auto frameBoundaryIdx = 0u; frameBoundaryIdx < configurationBoundaries.size(); ++frameBoundaryIdx) {
++
++// firstFrameInGroup_ = configurationBoundaries[frameBoundaryIdx];
++
++// lastFrameInGroup_ = (frameBoundaryIdx == configurationBoundaries.size() - 1 ? nFrames : configurationBoundaries[frameBoundaryIdx + 1]) - 1;
++
++// currentTileLayout_ = tileMap[firstFrameInGroup_];
++
++
++// for (auto tileIndex = 0u; tileIndex < currentTileLayout_->numberOfTiles(); ++tileIndex) {
++
++// Rectangle rect = currentTileLayout_->rectangleForTile(tileIndex);
++
++// tileEncodersManager_.createEncoderWithConfiguration(tileIndex, rect.width, rect.height);
++
++// tilesCurrentlyBeingEncoded_.push_back(tileIndex);
++
++// for (auto frameIdx = firstFrameInGroup_; frameIdx <= lastFrameInGroup_; ++frameIdx) {
++
++// // This assumes that the decoded frames are in the correct order.
++
++// // i.e., `frame->getFrameNumber(frameNumber)` follows in-order.
++
++// auto frame = decodedData->frames()[frameIdx];
++
++// tileEncodersManager_.encodeFrameForIdentifier(tileIndex, *frame, rect.y, rect.x, false);
++
++// }
++
++
++// readDataFromEncoders(true);
++
++// saveTileGroupsToDisk();
++
++// tilesCurrentlyBeingEncoded_.clear();
++
++// }
++
++// } 
++
++// return decodedData;
++
++// }
++
++    
++// std::optional<GPUDecodedFrameData> TileOperator::next() {
++//     auto decodedData = parent_->next();
++//     if (parent_->isComplete()) {
++//         readDataFromEncoders(true);
++//         saveTileGroupsToDisk();
++//         isComplete_ = true;
++//         return {};
++//     }
++
++//     for (auto frame : decodedData->frames()) {
++//         int frameNumber = -1;
++//         frameNumber = frame->getFrameNumber(frameNumber) ? frameNumber : frameNumber_++;
++//         auto tileLayout = tileConfigurationProvider_->tileLayoutForFrame(frameNumber);
++
++//         // Reconfigure the encoders if the layout changed.
++//         if (!currentTileLayout_ || *tileLayout != *currentTileLayout_ || frameNumber != lastFrameInGroup_ + 1) {
++//             // Read the data that was flushed from the encoders because it has the rest of the frames
++//             // that were encoded with the last configuration.
++//             if (currentTileLayout_) {
++//                 readDataFromEncoders(true);
++//                 if (firstFrameInGroup_ != -1)
++//                     saveTileGroupsToDisk();
++//             }
++//             tilesCurrentlyBeingEncoded_.clear();
++
++//             // Reconfigure the encoders.
++//             reconfigureEncodersForNewLayout(tileLayout);
++
++//             currentTileLayout_ = tileLayout;
++//             firstFrameInGroup_ = frameNumber;
++//         }
++
++//         // Encode each tile.
++//         lastFrameInGroup_ = frameNumber;
++//         encodeFrameToTiles(frame, frameNumber);
++//     }
++
++//     return decodedData;
++// }
++
+ void TileOperator::reconfigureEncodersForNewLayout(std::shared_ptr<const tasm::TileLayout> newLayout) {
+     for (auto tileIndex = 0u; tileIndex < newLayout->numberOfTiles(); ++tileIndex) {
+         Rectangle rect = newLayout->rectangleForTile(tileIndex);
+@@ -58,6 +255,7 @@ void TileOperator::saveTileGroupsToDisk() {
+         return;
+     }
+ 
++    // printStackTrace();
+     assert(tilesCurrentlyBeingEncoded_.size());
+     TileCrackingTransaction transaction(outputEntry_,
+                                       *currentTileLayout_,
+diff --git a/tasm/operators/src/TransformToImage.cc b/tasm/operators/src/TransformToImage.cc
+index 4e864a3..6462721 100644
+--- a/tasm/operators/src/TransformToImage.cc
++++ b/tasm/operators/src/TransformToImage.cc
+@@ -38,15 +38,20 @@ std::optional<std::unique_ptr<std::vector<ImagePtr>>> TransformToImage::next() {
+         auto width = object->width();
+         auto height = object->height();
+         auto frameSize = width * height * numChannels_;
++        auto frame_id = object->frame_id();
++        auto frame_x = object->frame_x();
++        auto frame_y = object->frame_y();
++        //std::cout << "\n####Object prints frame_id, frame_x, frame_y " << object->frame_id() << ", " << object->frame_x() << ", " << object->frame_y() << std::endl; 
+ 
+         std::unique_ptr<uint8_t[]> pImage(new uint8_t[frameSize]);
+         GetImage(object->handle(), reinterpret_cast<uint8_t*>(pImage.get()), numChannels_ * width, height, numChannels_ * object->xOffset(), object->yOffset(), object->pitch());
+ 
+         assert(frameSize);
+         assert(pImage);
+-        images->emplace_back(std::make_unique<Image>(width, height, std::move(pImage)));
++        images->emplace_back(std::make_unique<Image>(width, height, frame_id, frame_x, frame_y, std::move(pImage)));
++        //std::cout << "\n#### frame_id, frame_x, frame_y " << frame_id << ", " << frame_x << ", " << frame_y << std::endl; 
+     }
+     return images;
+ }
+ 
+-} // namespace tasm
+\ No newline at end of file
++} // namespace tasm
+diff --git a/tasm/utilities/src/Transaction.cc b/tasm/utilities/src/Transaction.cc
+index 0b7e1c5..21617cb 100644
+--- a/tasm/utilities/src/Transaction.cc
++++ b/tasm/utilities/src/Transaction.cc
+@@ -1,5 +1,4 @@
+ #include "Transaction.h"
+-
+ #include "Gpac.h"
+ #include <iostream>
+ 
+@@ -30,10 +29,10 @@ void TileCrackingTransaction::commit() {
+ 
+     writeTileMetadata();
+ 
+-    entry_->incrementTileVersion();
++    // entry_->incrementTileVersion();
+ }
+ 
+ void TileCrackingTransaction::writeTileMetadata() {
+     auto metadataFilename = tasm::TileFiles::tileMetadataFilename(*entry_, firstFrame_, lastFrame_);
+     tasm::gpac::write_tile_configuration(metadataFilename, tileLayout_);
+-}
+\ No newline at end of file
++}

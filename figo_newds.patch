@@ -1,0 +1,81 @@
+diff --git a/figo/scheduler.py b/figo/scheduler.py
+index 42ec3b3..a20fda0 100644
+--- a/figo/scheduler.py
++++ b/figo/scheduler.py
+@@ -213,6 +213,7 @@ class Scheduler:
+             else:
+                 chunk.set_model(None)
+ 
++            print(f"### FiFO chunk selected model: {sel_model}; start: {start}; end: {end}")
+             self._plan_chunk.append(chunk)
+         else:
+             span = (end - start) // 2
+diff --git a/loader/image_loader.py b/loader/image_loader.py
+index c146139..bfbf4fb 100644
+--- a/loader/image_loader.py
++++ b/loader/image_loader.py
+@@ -1,6 +1,6 @@
+ import os
+ import json
+-
++from glob import glob
+ 
+ class ImageLoader:
+     def __init__(self, dataset, use_cache=False):
+@@ -9,12 +9,18 @@ class ImageLoader:
+ 
+         if not use_cache:
+             self._root_dir = os.path.join("./data", dataset)
+-            self._length = len(os.listdir(self._root_dir))
++            
++            if self._dataset == "newds":
++                self._length = len(glob(self._root_dir+'/*.jpg'))
++            else:
++                self._length = len(os.listdir(self._root_dir))
+ 
+             self._img_path_list = []
+ 
+             if self._dataset == "ua-detrac":
+                 self._img_path_list = os.listdir(self._root_dir)
++            if self._dataset == "newds":
++                self._img_path_list = sorted(glob(self._root_dir+'/*.jpg'))
+         else:
+             with open(
+                 os.path.join("./cache", dataset, "efficientdet-d7.json")
+@@ -33,6 +39,8 @@ class ImageLoader:
+ 
+         if self._dataset == "ua-detrac":
+             img_path = os.path.join(self._root_dir, self._img_path_list[idx])
++        elif self._dataset == "newds":
++            img_path = self._img_path_list[idx]
+         else:
+             img_path = "frame" + str(idx) + ".jpg"
+             img_path = os.path.join(self._root_dir, img_path)
+diff --git a/modeling/efficientdet/model_label.py b/modeling/efficientdet/model_label.py
+index 8716336..ac891da 100644
+--- a/modeling/efficientdet/model_label.py
++++ b/modeling/efficientdet/model_label.py
+@@ -107,6 +107,9 @@ def label_to_cat_id(label):
+ 
+ 
+ def out_to_std_out(out):
+-    cls = [int(c) for c in out[0]["class_ids"]]
++    # print(out[0]["class_ids"])
++    cls1 = [int(c) for c in out[0]["class_ids"]]
++    cls2 = [int(c) for c in out[0]["class_ids"]]
+     score = [float(s) for s in out[0]["scores"]]
+-    return {"class": cls, "score": score}
++    #return {"class": cls, "score": score}
++    return {"class": cls1, "class_id": cls2, "score": score, "roi": out[0]["rois"].astype('uint32')}
+diff --git a/weights/get_weights.py b/weights/get_weights.py
+index 5846014..b7016f6 100644
+--- a/weights/get_weights.py
++++ b/weights/get_weights.py
+@@ -8,6 +8,7 @@ def main():
+         "releases/download/1.0/efficientdet-d{}.pth"
+     )
+ 
++    os.mkdir("efficientdet")
+     os.chdir("efficientdet")
+     for i in range(8):
+         os.system("wget " + base_url.format(i))
